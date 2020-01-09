@@ -10,6 +10,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "stuff", "stuff", "{0BFC8EC0
 		README.md = README.md
 	EndProjectSection
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalHueHubSubscriber.Func", "LocalHueHubSubscriber.Func\LocalHueHubSubscriber.Func.csproj", "{C7B4444D-E4AD-4C4F-A466-7CAC83FA78F7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,6 +22,10 @@ Global
 		{AFEF4376-2A6E-48BE-A934-B7932444DFC9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AFEF4376-2A6E-48BE-A934-B7932444DFC9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{AFEF4376-2A6E-48BE-A934-B7932444DFC9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C7B4444D-E4AD-4C4F-A466-7CAC83FA78F7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C7B4444D-E4AD-4C4F-A466-7CAC83FA78F7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C7B4444D-E4AD-4C4F-A466-7CAC83FA78F7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C7B4444D-E4AD-4C4F-A466-7CAC83FA78F7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 
@@ -39,43 +38,27 @@ namespace ComeBearingPresence.Func
         [FunctionName("auth-start")]
         public async Task<IActionResult> AuthStart([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/start")] HttpRequest req)
         {
-            var scopes = new[] { "offline_access", "Presence.Read" };
-
-            var account = await _cca.GetAccountsAsync().ConfigureAwait(true);
-            var tokenRequest = _cca.AcquireTokenSilent(scopes, account.FirstOrDefault());
-
-            AuthenticationResult result;
-
-            try
-            {
-                result = await tokenRequest.ExecuteAsync().ConfigureAwait(true);
-            }
-            catch (MsalUiRequiredException ex)
-            {
-                _log.LogError($"Ui required for msal: {ex}");
-                var authorizeUrl = await _cca.GetAuthorizationRequestUrl(scopes).WithExtraQueryParameters("response_mode=form_post").ExecuteAsync().ConfigureAwait(true);
-                return new RedirectResult(authorizeUrl.ToString());
-            }
-
-            if (result == null) { return new ForbidResult(); }
-            return new OkObjectResult(result);
+            var scopes = new[] { "offline_access", "Presence.Read" }; 
+            var authorizeUrl = await _cca.GetAuthorizationRequestUrl(scopes).WithExtraQueryParameters("response_mode=form_post").ExecuteAsync().ConfigureAwait(true);
+            return new RedirectResult(authorizeUrl.ToString());
         }
 
         [FunctionName("auth-end")]
-        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]IAsyncCollector<UserPresenceRequest> users)
+        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable table)
         {
             string c = req?.Form["code"];
 
-            if (string.IsNullOrEmpty(c))
+            if (string.IsNullOrEmpty(c) || table == null)
             {
                 return new BadRequestResult();
             }
 
-            await _cca.AcquireTokenByAuthorizationCode(_scopes, c).ExecuteAsync().ConfigureAwait(true);
-            var accounts = await _cca.GetAccountsAsync().ConfigureAwait(true);
-            if (accounts.Any())
+            var result = await _cca.AcquireTokenByAuthorizationCode(_scopes, c).ExecuteAsync().ConfigureAwait(true);
+            var account = await _cca.GetAccountAsync(result.Account.HomeAccountId.Identifier).ConfigureAwait(true);
+
+            if (account != null)
             {
-                var account = accounts.Single();
+                _log.LogInformation($"Found account: {account.HomeAccountId.Identifier}");
                 var a = new UserPresenceRequest()
                 {
                     PartitionKey = "UserAccount",
@@ -84,16 +67,16 @@ namespace ComeBearingPresence.Func
                     Upn = account.Username,
                     TenantId = account.HomeAccountId.TenantId
                 };
-                await users.AddAsync(a).ConfigureAwait(true);
 
-
-                var templatePath = System.IO.Path.Join(Environment.CurrentDirectory, @"..\..\Assets\authend.html");
-                _log.LogDebug($"Fetching html template from {templatePath}");
+                var op = TableOperation.InsertOrReplace(a);
+                await table.ExecuteAsync(op).ConfigureAwait(true);
+                
+                var templatePath = System.IO.Path.Join(Environment.CurrentDirectory, @"..\..\..\Assets\authend.html");
                 var template = System.IO.File.ReadAllText(templatePath);
                 var content = string.Format(CultureInfo.InvariantCulture, template, $"authentication successful! thanks {a.Upn}! we'll start polling for your presence and notify your subscribers");
                 return new ContentResult() { Content = content, ContentType = "text/html", StatusCode = 200 };
             }
-
+            
             return new OkResult();
         }
 
@@ -112,11 +95,11 @@ namespace ComeBearingPresence.Func
             return new OkObjectResult(last);
         }
 
-        //todo: evaluate if durable would be better here
+        // todo: evaluate if durable would be better here
         [FunctionName("presence-refresh")]
         public async Task CheckPresenceForAll([TimerTrigger("0/30 * * * * *")]TimerInfo timer,
-            [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceRequestStorageConnection")]CloudTable subscriberTable,
-            [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceRequestStorageConnection")]CloudTable lastPresenceTable,
+            [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable subscriberTable,
+            [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")]CloudTable lastPresenceTable,
             Binder serviceBusBinder
             )
         {
@@ -128,7 +111,6 @@ namespace ComeBearingPresence.Func
         public async Task<IActionResult> CheckPresenceForAllSync([HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = "presence/all")] HttpRequest req,
            [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable subscriberTable,
            [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")]CloudTable lastPresenceTable,
-           //[ServiceBus("presence", Connection = "PresenceTopicConnection", EntityType = Microsoft.Azure.WebJobs.ServiceBus.EntityType.Topic)]IAsyncCollector<UserPresence> pub
            Binder serviceBusBinder
            )
         {
@@ -152,7 +134,7 @@ namespace ComeBearingPresence.Func
                 var upsert = TableOperation.InsertOrReplace(current);
                 await lastPresenceTable.ExecuteAsync(upsert).ConfigureAwait(true);
 
-                //todo: create topic if doesn't exist
+                // todo: create topic _per user_ if doesn't exist
                 // notify subscribers
                 var attributes = new Attribute[]
                 {
@@ -166,9 +148,17 @@ namespace ComeBearingPresence.Func
             }
         }
 
+        private async Task CreateUserTopic(string identifier)
+        {
+            // sigh, since the tenant/sub this is hosted in doesn't match the tenant of the app reg itself, will have to use MSI or a separate app reg here (lame)
+            
+        }
+
         private async Task<UserPresence> GetPresenceFromGraph(string user)
         {
-            var userId = user ?? "john@jpd.ms";
+            if (string.IsNullOrEmpty(user)) return null;
+            // should possibly sanitize here, although there is no user-entered data present
+            var userId = user;
             var account = await _cca.GetAccountAsync(userId).ConfigureAwait(true);
 
             AuthenticationResult token = null;
@@ -211,31 +201,31 @@ namespace ComeBearingPresence.Func
                 Timestamp = DateTime.UtcNow
             };
 
-            var c = _httpClientFactory.CreateClient("graph");
-            c.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.AccessToken);
-            var presenceApi = new Uri($"/beta/users/{token.Account.HomeAccountId.ObjectId}/presence", UriKind.Relative);
-            var response = await c.GetAsync(presenceApi).ConfigureAwait(true);
+            //var c = _httpClientFactory.CreateClient("graph");
+            //c.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.AccessToken);
+            //var presenceApi = new Uri($"/beta/users/{token.Account.HomeAccountId.ObjectId}/presence", UriKind.Relative);
+            //var response = await c.GetAsync(presenceApi).ConfigureAwait(true);
 
-            switch (response.StatusCode)
-            {
-                case System.Net.HttpStatusCode.NotFound:
-                case System.Net.HttpStatusCode.BadRequest:
-                    {
-                        break;
-                    }
-                default: { break; }
-            }
+            //switch (response.StatusCode)
+            //{
+            //    case System.Net.HttpStatusCode.NotFound:
+            //    case System.Net.HttpStatusCode.BadRequest:
+            //        {
+            //            break;
+            //        }
+            //    default: { break; }
+            //}
 
-            var content = await response.Content.ReadAsStringAsync().ConfigureAwait(true);
-            var data = System.Text.Json.JsonDocument.Parse(content);
+            //var content = await response.Content.ReadAsStringAsync().ConfigureAwait(true);
+            //var data = System.Text.Json.JsonDocument.Parse(content);
 
-            return new UserPresence()
-            {
-                Activity = data.RootElement.GetProperty("activity").GetString(),
-                Availability = data.RootElement.GetProperty("availability").GetString(),
-                Upn = token.Account.Username,
-                ObjectId = data.RootElement.GetProperty("id").GetString()
-            };
+            //return new UserPresence()
+            //{
+            //    Activity = data.RootElement.GetProperty("activity").GetString(),
+            //    Availability = data.RootElement.GetProperty("availability").GetString(),
+            //    Upn = token.Account.Username,
+            //    ObjectId = data.RootElement.GetProperty("id").GetString()
+            //};
         }
     }
 }
