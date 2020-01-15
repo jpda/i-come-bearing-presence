@@ -1,7 +1,10 @@
 ﻿using System;
+using System.Security.Cryptography.X509Certificates;
+using Azure.Identity;
+using Azure.Security.KeyVault.Certificates;
 using ComeBearingPresence.Func.Model;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
-
+using Microsoft.Azure.Services.AppAuthentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Identity.Client;
@@ -33,7 +36,12 @@ namespace ComeBearingPresence.Func
                 var table = sa.CreateCloudTableClient().GetTableReference("MsalCache");
                 table.CreateIfNotExistsAsync().Wait();
 
-                var app = ConfidentialClientApplicationBuilder.Create(aadConfig["ClientId"]).WithRedirectUri(aadConfig["RedirectUrl"]).WithClientSecret(aadConfig["ClientSecret"]).WithTenantId(aadConfig["TenantId"]).Build();
+                var certClient = new CertificateClient(new Uri(config["KeyVault:Endpoint"]), new ManagedIdentityCredential());
+                var cert = certClient.GetCertificate(config["KeyVault:CertificateName"]).Value;
+
+                var x509 = new X509Certificate2(cert.Cer, config["KeyVault:CertPassword"]);
+
+                var app = ConfidentialClientApplicationBuilder.Create(aadConfig["ClientId"]).WithRedirectUri(aadConfig["RedirectUrl"]).WithTenantId(aadConfig["TenantId"]).WithCertificate(x509).Build();
                 app.UserTokenCache.SetBeforeAccess(args =>
                 {
                     // the cache here is sort of a mess. we need a per-user one for confidential apps, but we can't really have one because of how the cache is implemented :/

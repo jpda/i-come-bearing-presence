@@ -16,6 +16,7 @@ using Microsoft.WindowsAzure.Storage.Table;
 
 using ComeBearingPresence.Func;
 using ComeBearingPresence.Func.Model;
+using System.Web.Http;
 
 [assembly: FunctionsStartup(typeof(Startup))]
 
@@ -38,13 +39,13 @@ namespace ComeBearingPresence.Func
         [FunctionName("auth-start")]
         public async Task<IActionResult> AuthStart([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/start")] HttpRequest req)
         {
-            var scopes = new[] { "offline_access", "Presence.Read" }; 
+            var scopes = new[] { "offline_access", "Presence.Read" };
             var authorizeUrl = await _cca.GetAuthorizationRequestUrl(scopes).WithExtraQueryParameters("response_mode=form_post").ExecuteAsync().ConfigureAwait(true);
             return new RedirectResult(authorizeUrl.ToString());
         }
 
         [FunctionName("auth-end")]
-        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable table)
+        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "/auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable table)
         {
             string c = req?.Form["code"];
 
@@ -53,30 +54,39 @@ namespace ComeBearingPresence.Func
                 return new BadRequestResult();
             }
 
-            var result = await _cca.AcquireTokenByAuthorizationCode(_scopes, c).ExecuteAsync().ConfigureAwait(true);
-            var account = await _cca.GetAccountAsync(result.Account.HomeAccountId.Identifier).ConfigureAwait(true);
-
-            if (account != null)
+            try
             {
-                _log.LogInformation($"Found account: {account.HomeAccountId.Identifier}");
-                var a = new UserPresenceRequest()
-                {
-                    PartitionKey = "UserAccount",
-                    RowKey = account.HomeAccountId.Identifier,
-                    ObjectId = account.HomeAccountId.ObjectId,
-                    Upn = account.Username,
-                    TenantId = account.HomeAccountId.TenantId
-                };
+                var result = await _cca.AcquireTokenByAuthorizationCode(_scopes, c).ExecuteAsync().ConfigureAwait(true);
+                var account = await _cca.GetAccountAsync(result.Account.HomeAccountId.Identifier).ConfigureAwait(true);
 
-                var op = TableOperation.InsertOrReplace(a);
-                await table.ExecuteAsync(op).ConfigureAwait(true);
-                
-                var templatePath = System.IO.Path.Join(Environment.CurrentDirectory, @"..\..\..\Assets\authend.html");
-                var template = System.IO.File.ReadAllText(templatePath);
-                var content = string.Format(CultureInfo.InvariantCulture, template, $"authentication successful! thanks {a.Upn}! we'll start polling for your presence and notify your subscribers");
-                return new ContentResult() { Content = content, ContentType = "text/html", StatusCode = 200 };
+                if (account != null)
+                {
+                    _log.LogInformation($"Found account: {account.HomeAccountId.Identifier}");
+                    var a = new UserPresenceRequest()
+                    {
+                        PartitionKey = "UserAccount",
+                        RowKey = account.HomeAccountId.Identifier,
+                        ObjectId = account.HomeAccountId.ObjectId,
+                        Upn = account.Username,
+                        TenantId = account.HomeAccountId.TenantId
+                    };
+
+                    var op = TableOperation.InsertOrReplace(a);
+                    await table.ExecuteAsync(op).ConfigureAwait(true);
+
+                    var templatePath = System.IO.Path.Join(Environment.CurrentDirectory, @"..\..\..\Assets\authend.html");
+                    var template = System.IO.File.ReadAllText(templatePath);
+                    var content = string.Format(CultureInfo.InvariantCulture, template, $"authentication successful! thanks {a.Upn}! we'll start polling for your presence and notify your subscribers");
+                    return new ContentResult() { Content = content, ContentType = "text/html", StatusCode = 200 };
+                }
             }
-            
+            catch (Exception ex)
+            {
+                _log.LogError($"{ex.Message}: {ex.StackTrace}");
+                return new InternalServerErrorResult();
+            }
+
+
             return new OkResult();
         }
 
@@ -151,7 +161,7 @@ namespace ComeBearingPresence.Func
         private async Task CreateUserTopic(string identifier)
         {
             // sigh, since the tenant/sub this is hosted in doesn't match the tenant of the app reg itself, will have to use MSI or a separate app reg here (lame)
-            
+
         }
 
         private async Task<UserPresence> GetPresenceFromGraph(string user)
