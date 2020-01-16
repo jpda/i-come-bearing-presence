@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Net.Http;
 using System.Threading.Tasks;
 
 using Microsoft.AspNetCore.Http;
@@ -24,23 +23,21 @@ namespace ComeBearingPresence.Func
 {
     public class PresencePublisher
     {
-        private readonly IConfidentialClientApplication _cca;
         private readonly IEnumerable<string> _scopes = new[] { "offline_access", "Presence.Read" };
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger _log;
+        private readonly MsalClientFactory _msalFactory;
 
-        public PresencePublisher(IConfidentialClientApplication cca, IHttpClientFactory httpClientFactory, ILoggerFactory logger)
+        public PresencePublisher(ILoggerFactory logger, MsalClientFactory msalFactory)
         {
-            _cca = cca;
-            _httpClientFactory = httpClientFactory;
             _log = logger.CreateLogger<PresencePublisher>();
+            _msalFactory = msalFactory;
         }
 
         [FunctionName("auth-start")]
         public async Task<IActionResult> AuthStart([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/start")] HttpRequest req)
         {
             var scopes = new[] { "offline_access", "Presence.Read" };
-            var authorizeUrl = await _cca.GetAuthorizationRequestUrl(scopes).WithExtraQueryParameters("response_mode=form_post").ExecuteAsync().ConfigureAwait(true);
+            var authorizeUrl = await _msalFactory.Create().GetAuthorizationRequestUrl(scopes).WithExtraQueryParameters("response_mode=form_post").ExecuteAsync().ConfigureAwait(true);
             return new RedirectResult(authorizeUrl.ToString());
         }
 
@@ -56,8 +53,12 @@ namespace ComeBearingPresence.Func
 
             try
             {
-                var result = await _cca.AcquireTokenByAuthorizationCode(_scopes, c).ExecuteAsync().ConfigureAwait(true);
-                var account = await _cca.GetAccountAsync(result.Account.HomeAccountId.Identifier).ConfigureAwait(true);
+                var transientIdentity = $"{Guid.NewGuid().ToString()}.transient";
+                var cca = _msalFactory.CreateWithTransientIdentity(transientIdentity);
+                var result = await cca.AcquireTokenByAuthorizationCode(_scopes, c).ExecuteAsync().ConfigureAwait(true);
+                var account = await cca.GetAccountAsync(result.Account.HomeAccountId.Identifier).ConfigureAwait(true);
+
+                var switched = await _msalFactory.SwitchTransientKeyToActual(transientIdentity, result.Account.HomeAccountId.Identifier).ConfigureAwait(true);
 
                 if (account != null)
                 {
@@ -80,20 +81,13 @@ namespace ComeBearingPresence.Func
                     return new ContentResult() { Content = content, ContentType = "text/html", StatusCode = 200 };
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) //todo: catch something more specific here
             {
                 _log.LogError($"{ex.Message}: {ex.StackTrace}");
                 return new InternalServerErrorResult();
             }
 
-
             return new OkResult();
-        }
-
-        [FunctionName("get-live-presence")]
-        public async Task<IActionResult> GetLivePresence([HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = "presence/{user}/live")] HttpRequest req, string user)
-        {
-            return new OkObjectResult(await GetPresenceFromGraph(user).ConfigureAwait(true));
         }
 
         [FunctionName("get-last-presence")]
@@ -137,7 +131,7 @@ namespace ComeBearingPresence.Func
             foreach (var a in rows)
             {
                 _log.LogInformation($"found user: {a.PartitionKey}: {a.RowKey}, {a.Upn}");
-                var current = await GetPresenceFromGraph(a.Upn).ConfigureAwait(true);
+                var current = await GetPresenceFromGraph(a.RowKey, a.Upn).ConfigureAwait(true);
                 var last = await lastPresenceTable.Retrieve<UserPresence>("LastPresence", a.Upn).ConfigureAwait(true);
                 if (current != null && last != null && current.ObjectId == last.ObjectId && current.Activity == last.Activity && current.Availability == last.Availability) continue;
 
@@ -160,28 +154,26 @@ namespace ComeBearingPresence.Func
 
         private async Task CreateUserTopic(string identifier)
         {
-            // sigh, since the tenant/sub this is hosted in doesn't match the tenant of the app reg itself, will have to use MSI or a separate app reg here (lame)
-
+            // todo: since msi is here, let's do this
         }
 
-        private async Task<UserPresence> GetPresenceFromGraph(string user)
+        private async Task<UserPresence> GetPresenceFromGraph(string identifier, string upn)
         {
-            if (string.IsNullOrEmpty(user)) return null;
-            // should possibly sanitize here, although there is no user-entered data present
-            var userId = user;
-            var account = await _cca.GetAccountAsync(userId).ConfigureAwait(true);
+            if (string.IsNullOrEmpty(identifier) && string.IsNullOrEmpty(upn)) return null;
 
+            var cca = _msalFactory.CreateForIdentifier(identifier);
+            var account = await cca.GetAccountAsync(identifier).ConfigureAwait(true);
             AuthenticationResult token = null;
 
             try
             {
                 if (account == null)
                 {
-                    token = await _cca.AcquireTokenSilent(_scopes, userId).ExecuteAsync().ConfigureAwait(true);
+                    token = await cca.AcquireTokenSilent(_scopes, upn).ExecuteAsync().ConfigureAwait(true);
                 }
                 else
                 {
-                    token = await _cca.AcquireTokenSilent(_scopes, account).ExecuteAsync().ConfigureAwait(true);
+                    token = await cca.AcquireTokenSilent(_scopes, account).ExecuteAsync().ConfigureAwait(true);
                 }
             }
             catch (MsalUiRequiredException ex)
@@ -210,32 +202,6 @@ namespace ComeBearingPresence.Func
                 ObjectId = t.Id,
                 Timestamp = DateTime.UtcNow
             };
-
-            //var c = _httpClientFactory.CreateClient("graph");
-            //c.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.AccessToken);
-            //var presenceApi = new Uri($"/beta/users/{token.Account.HomeAccountId.ObjectId}/presence", UriKind.Relative);
-            //var response = await c.GetAsync(presenceApi).ConfigureAwait(true);
-
-            //switch (response.StatusCode)
-            //{
-            //    case System.Net.HttpStatusCode.NotFound:
-            //    case System.Net.HttpStatusCode.BadRequest:
-            //        {
-            //            break;
-            //        }
-            //    default: { break; }
-            //}
-
-            //var content = await response.Content.ReadAsStringAsync().ConfigureAwait(true);
-            //var data = System.Text.Json.JsonDocument.Parse(content);
-
-            //return new UserPresence()
-            //{
-            //    Activity = data.RootElement.GetProperty("activity").GetString(),
-            //    Availability = data.RootElement.GetProperty("availability").GetString(),
-            //    Upn = token.Account.Username,
-            //    ObjectId = data.RootElement.GetProperty("id").GetString()
-            //};
         }
     }
 }

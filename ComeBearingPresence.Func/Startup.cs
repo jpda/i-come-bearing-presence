@@ -1,14 +1,10 @@
 ﻿using System;
 using System.Security.Cryptography.X509Certificates;
 using Azure.Identity;
-using Azure.Security.KeyVault.Certificates;
 using Azure.Security.KeyVault.Secrets;
-using ComeBearingPresence.Func.Model;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
-using Microsoft.Azure.Services.AppAuthentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Identity.Client;
 using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Table;
 
@@ -18,11 +14,9 @@ namespace ComeBearingPresence.Func
 {
     public class Startup : FunctionsStartup
     {
-        private const string CacheKey = "UserTokenCache";
-
         public override void Configure(IFunctionsHostBuilder builder)
         {
-            var config = new ConfigurationBuilder().SetBasePath(Environment.CurrentDirectory).AddJsonFile("local.settings.json", optional: true).AddEnvironmentVariables().Build();//.AddAzureAppConfiguration(Environment.GetEnvironmentVariable("AZMAN-AAC-CONNECTION"), optional: true).Build();
+            var config = new ConfigurationBuilder().SetBasePath(Environment.CurrentDirectory).AddJsonFile("local.settings.json", optional: true).AddEnvironmentVariables().Build();
             var aadConfig = config.GetSection("AzureAd");
 
             builder?.Services.AddHttpClient("graph", x =>
@@ -30,50 +24,34 @@ namespace ComeBearingPresence.Func
                 x.BaseAddress = new Uri("https://graph.microsoft.com/");
             });
             builder.Services.AddLogging();
-            builder.Services.AddSingleton<IConfidentialClientApplication>(x =>
+            builder.Services.AddSingleton<CloudTable>(x =>
             {
                 var sa = CloudStorageAccount.Parse(config["TableTokenCache:ConnectionString"]);
-
                 var table = sa.CreateCloudTableClient().GetTableReference("MsalCache");
                 table.CreateIfNotExistsAsync().Wait();
-
-                var secretClient = new SecretClient(new Uri(config["KeyVault:Endpoint"]), new ManagedIdentityCredential());
-                var certKey = secretClient.GetSecret(config["KeyVault:CertificateName"]).Value;
-
-                var x509 = new X509Certificate2(Convert.FromBase64String(certKey.Value));
-
-                var app = ConfidentialClientApplicationBuilder.Create(aadConfig["ClientId"]).WithRedirectUri(aadConfig["RedirectUrl"]).WithTenantId(aadConfig["TenantId"]).WithCertificate(x509).Build();
-                app.UserTokenCache.SetBeforeAccess(args =>
-                {
-                    // the cache here is sort of a mess. we need a per-user one for confidential apps, but we can't really have one because of how the cache is implemented :/
-                    //var key = args.Account.HomeAccountId.ObjectId;
-
-                    var op = TableOperation.Retrieve<TableTokenCacheItem>(args.ClientId, CacheKey);
-                    var result = table.ExecuteAsync(op).Result;
-
-                    if (result.HttpStatusCode < 300)
-                    {
-                        var userCache = result.Result as TableTokenCacheItem;
-                        args.TokenCache.DeserializeMsalV3(Convert.FromBase64String(userCache.TokenData));
-                    }
-                });
-                app.UserTokenCache.SetAfterAccess(args =>
-                {
-                    if (args.HasStateChanged)
-                    {
-                        var entity = new TableTokenCacheItem()
-                        {
-                            PartitionKey = args.ClientId,
-                            RowKey = CacheKey,
-                            TokenData = Convert.ToBase64String(args.TokenCache.SerializeMsalV3())
-                        };
-                        var op = TableOperation.InsertOrReplace(entity);
-                        table.ExecuteAsync(op).Wait();
-                    }
-                });
-
-                return app;
+                return table;
             });
+
+            builder.Services.Configure<MsalOptions>(x =>
+            {
+                x.ClientId = aadConfig["ClientId"];
+                x.RedirectUri = aadConfig["RedirectUrl"];
+                x.TenantId = aadConfig["TenantId"];
+
+                if (Environment.GetEnvironmentVariable("MSI_ENDPOINT") != null)
+                {
+                    var secretClient = new SecretClient(new Uri(config["KeyVault:Endpoint"]), new ManagedIdentityCredential());
+                    var certKey = secretClient.GetSecret(config["KeyVault:CertificateName"]).Value;
+                    x.Certificate = new X509Certificate2(Convert.FromBase64String(certKey.Value));
+                }
+                else
+                {
+                    x.Certificate = new X509Certificate2(System.IO.File.ReadAllBytes(config["AzureAd:TestCertificatePath"]), config["AzureAd:TestCertificatePassword"]);
+                }
+            });
+
+            builder.Services.AddTransient<ITokenCacheAccessor, PerUserTableTokenCacheAccessor>();
+            builder.Services.AddTransient<MsalClientFactory>();
         }
     }
 }
