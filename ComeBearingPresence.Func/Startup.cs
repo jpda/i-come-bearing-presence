@@ -2,6 +2,7 @@
 using System.Security.Cryptography.X509Certificates;
 using Azure.Identity;
 using Azure.Security.KeyVault.Certificates;
+using Azure.Security.KeyVault.Secrets;
 using ComeBearingPresence.Func.Model;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Azure.Services.AppAuthentication;
@@ -36,10 +37,10 @@ namespace ComeBearingPresence.Func
                 var table = sa.CreateCloudTableClient().GetTableReference("MsalCache");
                 table.CreateIfNotExistsAsync().Wait();
 
-                var certClient = new CertificateClient(new Uri(config["KeyVault:Endpoint"]), new ManagedIdentityCredential());
-                var cert = certClient.GetCertificate(config["KeyVault:CertificateName"]).Value;
+                var secretClient = new SecretClient(new Uri(config["KeyVault:Endpoint"]), new ManagedIdentityCredential());
+                var certKey = secretClient.GetSecret(config["KeyVault:CertificateName"]).Value;
 
-                var x509 = new X509Certificate2(cert.Cer, config["KeyVault:CertPassword"]);
+                var x509 = new X509Certificate2(Convert.FromBase64String(certKey.Value));
 
                 var app = ConfidentialClientApplicationBuilder.Create(aadConfig["ClientId"]).WithRedirectUri(aadConfig["RedirectUrl"]).WithTenantId(aadConfig["TenantId"]).WithCertificate(x509).Build();
                 app.UserTokenCache.SetBeforeAccess(args =>

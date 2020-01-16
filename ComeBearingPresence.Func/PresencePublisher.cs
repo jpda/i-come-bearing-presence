@@ -45,7 +45,7 @@ namespace ComeBearingPresence.Func
         }
 
         [FunctionName("auth-end")]
-        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "/auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable table)
+        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable table)
         {
             string c = req?.Form["code"];
 
