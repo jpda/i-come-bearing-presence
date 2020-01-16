@@ -10,3 +10,6 @@ This example is slightly different in that the function itself is handling the i
 Once the tokens are acquired, it starts polling every 30 seconds for new changes to presence. There's a balance here - 30 seconds is sorta slow but running a timer function every second might be more than you're willing to spend ($0.40 at last check, for ~2.6m executions). Cost consideration is probably more important around storage txns rather than function execution, since msal's token cache accessors access more than once on a single retrieval - so each run is ~3-4 storage txns.
 
 More on the token cache - the token cache should be _per user_ in msal, but we lack an effective way to know the user without a hydrated `Account` - it's sort of chicken and egg, although not really - things like `login_hint` could be used, since this is background work that doesn't have a user issuing actual requests to it - but more on that later.
+
+# token cache
+This is sort of a mess - since there is no way I can see to use a cache lookup key per request, instead I've gone with the nuclear option of transient CCAs for each user, with a wrapper around the `BeforeAccess` and `AfterAccess` setters to configure them to a specific key. It's messy and I really don't like constantly creating and trashing those CCAs, but it's 2020 and memory is cheap, i guess :/
