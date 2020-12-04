@@ -1,7 +1,9 @@
-﻿using System.Threading.Tasks;
+﻿using System.Security.Cryptography.X509Certificates;
+using System.Threading.Tasks;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Client;
+using Microsoft.Extensions.Logging;
 
 [assembly: FunctionsStartup(typeof(ComeBearingPresence.Func.Startup))]
 
@@ -11,16 +13,22 @@ namespace ComeBearingPresence.Func
     {
         private readonly MsalOptions _config;
         private readonly ITokenCacheAccessor _tokenCacheAccessor;
+        private readonly ILogger _log;
 
-        public MsalClientFactory(IOptions<MsalOptions> config, ITokenCacheAccessor tokenCacheAccessor)
+        public MsalClientFactory(IOptions<MsalOptions> config, ITokenCacheAccessor tokenCacheAccessor, X509Certificate2 cert, ILoggerFactory loggerFactory)
         {
+            _log = loggerFactory.CreateLogger<MsalClientFactory>();
+            _log.LogDebug($"Entering MsalClientFactory with injected certificate {cert.Subject}, {cert.Thumbprint}");
+
             _config = config.Value;
+            _config.Certificate = cert;
             _tokenCacheAccessor = tokenCacheAccessor;
         }
 
         public IConfidentialClientApplication Create()
         {
             var app = ConfidentialClientApplicationBuilder.Create(_config.ClientId).WithRedirectUri(_config.RedirectUri).WithTenantId(_config.TenantId).WithCertificate(_config.Certificate).Build();
+            
             return app;
         }
 

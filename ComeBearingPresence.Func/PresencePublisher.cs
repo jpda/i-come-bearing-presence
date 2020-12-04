@@ -42,7 +42,7 @@ namespace ComeBearingPresence.Func
         }
 
         [FunctionName("auth-end")]
-        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable table)
+        public async Task<IActionResult> AuthenticationResponseReceived([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "auth/end")] HttpRequest req, [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")] CloudTable table)
         {
             string c = req?.Form["code"];
 
@@ -91,7 +91,7 @@ namespace ComeBearingPresence.Func
         }
 
         [FunctionName("get-last-presence")]
-        public static async Task<IActionResult> GetLastPresence([HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = "presence/{user}/last")] HttpRequest req, string user, [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")]CloudTable table)
+        public static async Task<IActionResult> GetLastPresence([HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = "presence/{user}/last")] HttpRequest req, string user, [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")] CloudTable table)
         {
             var last = await table.Retrieve<UserPresence>("LastPresence", user).ConfigureAwait(true);
             if (last == null) return new OkObjectResult(new UserPresence());
@@ -101,9 +101,9 @@ namespace ComeBearingPresence.Func
 
         // todo: evaluate if durable would be better here
         [FunctionName("presence-refresh")]
-        public async Task CheckPresenceForAll([TimerTrigger("0/30 * * * * *")]TimerInfo timer,
-            [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable subscriberTable,
-            [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")]CloudTable lastPresenceTable,
+        public async Task CheckPresenceForAll([TimerTrigger("0/30 * * * * *")] TimerInfo timer,
+            [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")] CloudTable subscriberTable,
+            [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")] CloudTable lastPresenceTable,
             Binder serviceBusBinder
             )
         {
@@ -113,14 +113,15 @@ namespace ComeBearingPresence.Func
 
         [FunctionName("presence-refresh-sync")]
         public async Task<IActionResult> CheckPresenceForAllSync([HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = "presence/all")] HttpRequest req,
-           [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")]CloudTable subscriberTable,
-           [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")]CloudTable lastPresenceTable,
+           [Table("%UserPresenceSubscribedUserTableName%", Connection = "UserPresenceStorageConnection")] CloudTable subscriberTable,
+           [Table("%UserPresenceStorageTableName%", Connection = "UserPresenceStorageConnection")] CloudTable lastPresenceTable,
            Binder serviceBusBinder
            )
         {
             await CheckAndUpdatePresence(subscriberTable, lastPresenceTable, serviceBusBinder).ConfigureAwait(true);
             return new OkResult();
         }
+
 
         private async Task CheckAndUpdatePresence(CloudTable subscriberTable, CloudTable lastPresenceTable, Binder serviceBusBinder)
         {
@@ -161,18 +162,21 @@ namespace ComeBearingPresence.Func
         {
             if (string.IsNullOrEmpty(identifier) && string.IsNullOrEmpty(upn)) return null;
 
+            _log.LogDebug($"Fetching presence for {upn} ({identifier})");
+
             var cca = _msalFactory.CreateForIdentifier(identifier);
             var account = await cca.GetAccountAsync(identifier).ConfigureAwait(true);
             AuthenticationResult token = null;
-
             try
             {
                 if (account == null)
                 {
+                    _log.LogDebug($"Account for {upn} ({identifier}) not found, using login_hint");
                     token = await cca.AcquireTokenSilent(_scopes, upn).ExecuteAsync().ConfigureAwait(true);
                 }
                 else
                 {
+                    _log.LogDebug($"Account for {upn} ({identifier}) found");
                     token = await cca.AcquireTokenSilent(_scopes, account).ExecuteAsync().ConfigureAwait(true);
                 }
             }

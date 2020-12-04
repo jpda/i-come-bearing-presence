@@ -2,6 +2,7 @@
 using System.Threading.Tasks;
 using ComeBearingPresence.Func.Model;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Identity.Client;
 using Microsoft.WindowsAzure.Storage.Table;
 
@@ -13,14 +14,17 @@ namespace ComeBearingPresence.Func
     {
         private readonly CloudTable _table;
         private string _userCacheKey;
+        private readonly ILogger _log;
 
-        public PerUserTableTokenCacheAccessor(CloudTable table)
+        public PerUserTableTokenCacheAccessor(CloudTable table, ILoggerFactory logger)
         {
             _table = table;
+            _log = logger.CreateLogger<PerUserTableTokenCacheAccessor>();
         }
 
         public void Configure(string userCacheIdentifier)
         {
+            _log.LogInformation($"Configured with cache identifier {userCacheIdentifier}");
             _userCacheKey = userCacheIdentifier;
         }
 
@@ -28,8 +32,12 @@ namespace ComeBearingPresence.Func
         {
             if (string.IsNullOrEmpty(_userCacheKey)) throw new ArgumentNullException(_userCacheKey);
 
+            _log.LogInformation($"BeforeAccess; {_userCacheKey}, {args.ClientId}");
+
             var op = TableOperation.Retrieve<TableTokenCacheItem>(args.ClientId, args.IsApplicationCache ? args.ClientId : _userCacheKey);
             var result = _table.ExecuteAsync(op).Result;
+
+            _log.LogInformation($"BeforeAccess; {_userCacheKey}, {args.ClientId}, result {result.HttpStatusCode}");
 
             if (result.HttpStatusCode < 300)
             {
@@ -41,6 +49,7 @@ namespace ComeBearingPresence.Func
         public void AfterAccess(TokenCacheNotificationArgs args)
         {
             if (string.IsNullOrEmpty(_userCacheKey)) throw new ArgumentNullException(_userCacheKey);
+            _log.LogInformation($"AfterAccess; {_userCacheKey}, {args.ClientId}, State change? {args.HasStateChanged}");
 
             if (args.HasStateChanged)
             {
@@ -51,7 +60,9 @@ namespace ComeBearingPresence.Func
                     TokenData = Convert.ToBase64String(args.TokenCache.SerializeMsalV3())
                 };
                 var op = TableOperation.InsertOrReplace(entity);
-                _table.ExecuteAsync(op).Wait();
+                var result = _table.ExecuteAsync(op).Result;
+
+                _log.LogInformation($"AfterAccess; {_userCacheKey}, {args.ClientId}, result {result.HttpStatusCode}");
             }
         }
 
